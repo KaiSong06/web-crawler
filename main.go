@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sync"
 )
 
@@ -32,6 +33,38 @@ func (s *Stack) size() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.elements)
+}
+
+// Set of crawled URLs
+type CrawledURLs struct {
+	urls   map[uint64]bool
+	number int
+	mu     sync.Mutex
+}
+
+func (c *CrawledURLs) add(url string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.urls[hashUrl(url)] = true
+	c.number++
+}
+
+func (c *CrawledURLs) contains(url string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.urls[hashUrl(url)]
+}
+
+func (c *CrawledURLs) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.number
+}
+
+func hashUrl(url string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(url))
+	return h.Sum64()
 }
 
 func main() {
