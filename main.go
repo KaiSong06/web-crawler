@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"hash/fnv"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -70,7 +73,7 @@ func hashUrl(url string) uint64 {
 	return h.Sum64()
 }
 
-func getHref(token html.Token) (pass boolm, href string) {
+func getHref(token html.Token) (pass bool, href string) {
 	for _, a := range token.Attr {
 		if a.Key == "href" {
 			if len(a.Val) == 0 || !strings.HasPrefix(a.Val, "http") {
@@ -83,6 +86,38 @@ func getHref(token html.Token) (pass boolm, href string) {
 		pass = true
 	}
 	return pass, href
+}
+
+func fetchPage(url string, c chan []byte) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		c <- []byte("")
+		return
+	}
+	req.Header.Set("User-Agent", "GoatCrawler/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		c <- []byte("")
+		return
+	}
+	defer resp.Body.Close()
+
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		c <- []byte("")
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c <- []byte("")
+		return
+	}
+	c <- body
 }
 
 func main() {
