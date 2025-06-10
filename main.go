@@ -166,7 +166,9 @@ func parseHTML(htmlContent []byte) ([]string, string) {
 		if node.Type == html.ElementNode && node.Data == "a" {
 			for _, attr := range node.Attr {
 				if attr.Key == "href" && strings.HasPrefix(attr.Val, "http") {
-					urls = append(urls, attr.Val)
+					if !filter(attr.Val) {
+						urls = append(urls, attr.Val)
+					}
 				}
 			}
 		}
@@ -177,6 +179,61 @@ func parseHTML(htmlContent []byte) ([]string, string) {
 	visit(doc)
 	title := getTitle(doc)
 	return urls, title
+}
+
+func filter(url string) bool {
+	excludedDomains := []string{
+		"fonts.googleapis.com",
+		"fonts.gstatic.com",
+		"cdn.jsdelivr.net",
+		"cdnjs.cloudflare.com",
+		"stackpath.bootstrapcdn.com",
+		"ajax.googleapis.com",
+		"code.jquery.com",
+		"use.fontawesome.com",
+		"google-analytics.com",
+		"googletagmanager.com",
+		"doubleclick.net",
+		"facebook.net",
+		"twitter.com",
+		"instagram.com",
+		"t.co",
+		"linkedin.com",
+		"ads.google.com",
+		"?utm_", "?ref=", "?sessionid=", "?sort=", "?page=", "?offset=",
+		"#",
+		"accounts.google.com",
+		"login.microsoftonline.com",
+		"youtube.com/embed/",
+		"facebook.com/plugins/",
+		"instagram.com/embed/",
+		"google.com",
+	}
+
+	excludedExtensions := []string{
+		".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp",
+		".mp4", ".mov", ".avi", ".mkv", ".webm",
+		".mp3", ".wav", ".ogg", ".flac",
+		".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+		".zip", ".rar", ".gz", ".tar", ".7z", ".exe", ".iso",
+		".css", ".js", ".woff", ".woff2", ".ttf", ".eot", ".otf",
+		".ico", ".apk", ".dmg",
+	}
+
+	for _, domain := range excludedDomains {
+		if strings.Contains(strings.ToLower(url), domain) {
+			return true
+		}
+	}
+
+	// Check if URL ends with excluded extensions
+	for _, ext := range excludedExtensions {
+		if strings.HasSuffix(strings.ToLower(url), ext) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func crawl(startURL string, s3Client *s3.Client, bucket string, maxPages int) {
