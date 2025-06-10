@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
+
+	"golang.org/x/net/html"
 )
 
 // Stack
@@ -65,6 +68,21 @@ func hashUrl(url string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(url))
 	return h.Sum64()
+}
+
+func getHref(token html.Token) (pass boolm, href string) {
+	for _, a := range token.Attr {
+		if a.Key == "href" {
+			if len(a.Val) == 0 || !strings.HasPrefix(a.Val, "http") {
+				pass = false
+			}
+			href = a.Val
+			return true, href
+		}
+		href = a.Val
+		pass = true
+	}
+	return pass, href
 }
 
 func main() {
