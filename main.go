@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"golang.org/x/net/html"
 )
 
@@ -39,6 +45,17 @@ func (s *Stack) size() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.elements)
+}
+
+func (s *Stack) contains(url string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, element := range s.elements {
+		if element == url {
+			return true
+		}
+	}
+	return false
 }
 
 // Set of crawled URLs
@@ -120,6 +137,125 @@ func fetchPage(url string, c chan []byte) {
 	c <- body
 }
 
+func getTitle(doc *html.Node) string {
+	var title string
+	var visit func(*html.Node)
+	visit = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "title" && n.FirstChild != nil {
+			title = n.FirstChild.Data
+			return
+		}
+		for child := n.FirstChild; child != nil && title == ""; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(doc)
+	return title
+}
+
+func parseHTML(htmlContent []byte) ([]string, string) {
+	var urls []string
+	doc, err := html.Parse(bytes.NewReader(htmlContent))
+	if err != nil {
+		log.Printf("failed to parse HTML: %v", err)
+		return urls, ""
+	}
+
+	var visit func(*html.Node)
+	visit = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "a" {
+			for _, attr := range node.Attr {
+				if attr.Key == "href" && strings.HasPrefix(attr.Val, "http") {
+					urls = append(urls, attr.Val)
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(doc)
+	title := getTitle(doc)
+	return urls, title
+}
+
+func crawl(startURL string, s3Client *s3.Client, bucket string, maxPages int) {
+	stack := &Stack{}
+	crawled := &CrawledURLs{urls: make(map[uint64]bool)}
+	stack.push(startURL)
+
+	for stack.size() > 0 && crawled.size() < maxPages {
+		curURL, pass := stack.pop()
+		if !pass || crawled.contains(curURL) {
+			continue
+		}
+
+		bodyChan := make(chan []byte)
+		go fetchPage(curURL, bodyChan)
+		body := <-bodyChan
+		if len(body) == 0 {
+			continue
+		}
+
+		crawled.add(curURL)
+
+		urls, title := parseHTML(body)
+		for _, url := range urls {
+			if !crawled.contains(url) {
+				stack.push(url)
+			}
+		}
+
+		jsonData := []byte(fmt.Sprintf(`{"url": %q, "title": %q, "url_count": %d}`, curURL, title, len(urls)))
+		key := fmt.Sprintf("pages/%d.json", time.Now().UnixNano())
+		err := UploadToS3(s3Client, bucket, key, jsonData)
+		if err != nil {
+			log.Printf("failed to upload %s to S3: %v", curURL, err)
+		} else {
+			log.Printf("uploaded %s to S3 bucket %s with key %s", curURL, bucket, key)
+		}
+	}
+}
+
+func s3Setup() *s3.Client {
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		log.Fatalf("failed to load AWS config: %v", err)
+	}
+
+	return s3.NewFromConfig(cfg)
+}
+
+func UploadToS3(s3Client *s3.Client, bucket, key string, body []byte) error {
+	_, err := s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:      &bucket,
+		Key:         &key,
+		Body:        bytes.NewReader(body),
+		ContentType: &([]string{"application/json"}[0]), // <- changed to JSON
+		ACL:         types.ObjectCannedACLPrivate,       // Optional: change to PublicRead if needed
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload to S3: %w", err)
+	}
+	return nil
+}
+
 func main() {
-	fmt.Println("Hello, World!")
+	var bucket string
+	var startURL string
+	var maxPages int
+
+	s3Client := s3Setup()
+
+	fmt.Println("S3 Bucket Name:")
+	fmt.Scanln(&bucket)
+	fmt.Println("Start URL:")
+	fmt.Scanln(&startURL)
+	fmt.Println("Max Pages to Crawl:")
+	fmt.Scanln(&maxPages)
+	if bucket == "" || startURL == "" || maxPages <= 0 {
+		log.Fatal("Invalid input. Please provide a valid S3 bucket name, start URL, and a positive number for max pages.")
+	}
+
+	crawl(startURL, s3Client, bucket, maxPages)
 }
